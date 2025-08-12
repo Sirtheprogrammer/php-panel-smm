@@ -2,12 +2,45 @@
 /**
  * Multi-Provider API Management System
  * Handles multiple SMM API providers with automatic failover and load balancing
+ * Supports SMMGUO v2 API format and compatible providers
  */
 
 class MultiProviderApi {
     private $db;
     private $providers = [];
     private $currentProvider = null;
+    private $lastError = '';
+    
+    // Supported provider types and their API endpoints
+    private $providerConfigs = [
+        'smmguo' => [
+            'api_url' => 'https://smmguo.com/api/v2',
+            'needs_email' => true,
+            'version' => 'v2'
+        ],
+        'subscriptionbay' => [
+            'api_url' => 'https://subscriptionbay.com/api/v2',
+            'needs_email' => true,
+            'version' => 'v2'
+        ],
+        'followersup' => [
+            'api_url' => 'https://followersup.com/api/v2',
+            'needs_email' => true,
+            'version' => 'v2'
+        ],
+        'smmpanel' => [
+            'api_url' => 'https://smmpanel.net/api/v2',
+            'needs_email' => true,
+            'version' => 'v2'
+        ]
+    ];
+    
+    /**
+     * Get the last error message
+     */
+    public function getLastError() {
+        return $this->lastError;
+    }
     
     public function __construct($database = null) {
         global $db;
@@ -37,9 +70,40 @@ class MultiProviderApi {
     }
     
     /**
-     * Add a new API provider
+     * Add a new API provider with v2 support
+     * 
+     * @param string $name Provider name
+     * @param string $apiUrl API endpoint URL
+     * @param string $apiKey API key
+     * @param string|null $apiEmail API email (required for v2)
+     * @param string $providerType Provider type (smmguo, subscriptionbay, etc.)
+     * @param int $priority Provider priority (1-10)
+     * @param string $status Initial status (active/inactive)
+     * @return bool|int Provider ID on success, false on failure
      */
-    public function addProvider($name, $apiUrl, $apiKey, $priority = 1) {
+    public function addProvider($name, $apiUrl, $apiKey, $apiEmail = null, $providerType = 'other_v2', $priority = 5, $status = 'active') {
+        // Clean and validate URL
+        $apiUrl = rtrim($apiUrl, '/');
+        $providerType = strtolower($providerType);
+        
+        // Auto-detect provider type if not specified
+        if ($providerType === 'auto') {
+            foreach ($this->providerConfigs as $type => $config) {
+                if (strpos($apiUrl, parse_url($config['api_url'], PHP_URL_HOST)) !== false) {
+                    $providerType = $type;
+                    break;
+                }
+            }
+        }
+        
+        // Initial validation and setup for v2 API support
+        if ($providerType === 'other_v2') {
+            if (!$apiEmail) {
+                $this->lastError = 'API email is required for v2 providers';
+                return false;
+            }
+        }
+        
         $stmt = $this->db->prepare("
             INSERT INTO api_providers (name, api_url, api_key, priority, status) 
             VALUES (?, ?, ?, ?, 'active')

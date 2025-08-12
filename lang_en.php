@@ -122,7 +122,7 @@ return [
     'search_placeholder' => 'Search for a service...',
     'select_service' => 'Select Service',
     'transaction_history' => 'Transaction History',
-    'admin_support_tickets' => 'Admin Support Tickets',
+    
     'welcome_title' => 'welcome sirtech smm',
     'quantity_hint' => 'enter amount you want..',
     'link_hint' => 'https://example.com',

@@ -178,7 +178,7 @@ function t($key) {
 // Ensure main queries are always run and assigned
 $users = $db->query("SELECT * FROM users LIMIT 10");
 $users = $users ? $users->fetch_all(MYSQLI_ASSOC) : [];
-$services = $db->query("SELECT * FROM services WHERE visible = 1");
+$services = $db->query("SELECT * FROM services WHERE status = 1");
 $services = $services ? $services->fetch_all(MYSQLI_ASSOC) : [];
 $orders = $db->query("SELECT o.*, u.username FROM orders o JOIN users u ON o.user_id = u.id ORDER BY o.id DESC LIMIT 10");
 $orders = $orders ? $orders->fetch_all(MYSQLI_ASSOC) : [];
@@ -232,31 +232,6 @@ if (isset($_POST['update_service'])) {
     $db->query("UPDATE services SET $set WHERE id=$service_id");
 }
 
-// --- Support Tickets Admin Logic ---
-// Handle admin reply
-if (isset($_POST['admin_reply']) && isset($_POST['ticket_id'])) {
-    $ticket_id = (int)$_POST['ticket_id'];
-    $reply_message = trim($_POST['reply_message'] ?? '');
-    if ($reply_message !== '') {
-        // Get user_id and ticket_type from original ticket
-        $orig = $db->query("SELECT user_id, ticket_type FROM support_tickets WHERE id=$ticket_id")->fetch_assoc();
-        if ($orig) {
-            $stmt = $db->prepare("INSERT INTO support_tickets (user_id, message, is_admin_reply, parent_id, ticket_type) VALUES (?, ?, 1, ?, ?)");
-            $stmt->bind_param('isis', $orig['user_id'], $reply_message, $ticket_id, $orig['ticket_type']);
-            $stmt->execute();
-            $stmt->close();
-        }
-    }
-}
-// Fetch all top-level tickets (user messages, not admin replies)
-$support_tickets = $db->query("SELECT st.*, u.username FROM support_tickets st JOIN users u ON st.user_id = u.id WHERE st.parent_id IS NULL ORDER BY st.created_at DESC LIMIT 50");
-
-// Mark all user messages as seen when admin visits support section
-if (isset($_GET['section']) && $_GET['section'] === 'support') {
-    $db->query("UPDATE support_tickets SET seen_by_admin=1 WHERE is_admin_reply=0 AND seen_by_admin=0");
-}
-// Count unseen user tickets for admin notification badge
-$unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHERE is_admin_reply=0 AND seen_by_admin=0")->fetch_assoc()['c'] ?? 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -463,9 +438,19 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
             border: none;
         }
         
-        /* Section visibility for tab navigation */
+        /* Admin Section Navigation */
         .main-content .row[id] {
             display: none;
+        }
+        
+        .main-content .row[id].active,
+        .main-content .row[id]#dashboard {
+            display: block;
+        }
+        
+        .nav-link.active {
+            background-color: var(--primary) !important;
+            color: white !important;
         }
         
         .main-content .row[id].active,
@@ -628,61 +613,73 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
             <span>SIRTECH <span style="color: #6c5ce7;">SMM</span></span>
         </div>
         <ul class="nav flex-column mt-3">
+            <!-- Core Management -->
             <li class="nav-item">
-                <a class="nav-link active" href="#dashboard">
-                    <i class="fas fa-tachometer-alt"></i>
-                    <?php echo t('dashboard'); ?>
+                <a href="#dashboard" class="nav-link active" data-section="dashboard">
+                    <i class="fas fa-tachometer-alt"></i> Dashboard
+                </a>
+            </li>
+            
+            <!-- User & Order Management -->
+            <li class="nav-item">
+                <a href="#users" class="nav-link" data-section="users">
+                    <i class="fas fa-users"></i> User Management
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="#users">
-                    <i class="fas fa-users"></i>
-                    <?php echo t('users'); ?>
+                <a href="#orders" class="nav-link" data-section="orders">
+                    <i class="fas fa-shopping-cart"></i> Order Management
+                </a>
+            </li>
+            
+            <!-- Service Management -->
+            <li class="nav-item">
+                <a href="#services" class="nav-link" data-section="services">
+                    <i class="fas fa-cogs"></i> Service Management
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="#orders">
-                    <i class="fas fa-list"></i>
-                    <?php echo t('orders'); ?>
+                <a href="admin_api_providers.php" class="nav-link">
+                    <i class="fas fa-server"></i> API Providers
+                </a>
+            </li>
+            
+            <!-- Financial Management -->
+            <li class="nav-item">
+                <a href="admin_payments.php" class="nav-link">
+                    <i class="fas fa-credit-card"></i> Payment Management
+                    <?php 
+                    $pending_count = $db->query("SELECT COUNT(*) as count FROM payment_requests WHERE status = 'pending'")->fetch_assoc()['count'] ?? 0;
+                    if ($pending_count > 0): ?>
+                        <span class="badge bg-warning ms-2"><?php echo $pending_count; ?></span>
+                    <?php endif; ?>
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" href="#activity">
-                    <i class="fas fa-history"></i>
-                    <?php echo t('activity'); ?>
+                <a href="admin_currency.php" class="nav-link">
+                    <i class="fas fa-coins"></i> Currency Management
                 </a>
             </li>
+            
+            <!-- Support & Analytics -->
             <li class="nav-item">
-                <a class="nav-link" href="#revenue">
-                    <i class="fas fa-coins"></i>
-                    <?php echo t('revenue'); ?>
-                </a>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link" href="#services">
-                    <i class="fas fa-cogs"></i>
-                    <?php echo t('services'); ?>
-                </a>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link" href="#providers">
-                    <i class="fas fa-server"></i>
-                    API Providers
-                </a>
-            </li>
-            <li class="nav-item">
-                <a class="nav-link" href="admin_support.php">
-                    <i class="fas fa-headset"></i>
-                    <?php echo t('support'); ?>
+                <a href="admin_support.php" class="nav-link">
+                    <i class="fas fa-headset"></i> Support Tickets
                     <?php if ($unseen_user_tickets > 0): ?>
                         <span class="badge bg-danger ms-1"><?php echo $unseen_user_tickets; ?></span>
                     <?php endif; ?>
                 </a>
             </li>
+            <li class="nav-item">
+                <a href="#activity" class="nav-link" data-section="activity">
+                    <i class="fas fa-chart-line"></i> Activity Reports
+                </a>
+            </li>
+            
+            <!-- System -->
             <li class="nav-item mt-4">
                 <a class="nav-link" href="logout.php">
-                    <i class="fas fa-sign-out-alt"></i>
-                    <?php echo t('logout'); ?>
+                    <i class="fas fa-sign-out-alt"></i> Logout
                 </a>
             </li>
         </ul>
@@ -758,72 +755,49 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
                 </div>
             </div>
 
-            <!-- Balance Stats -->
+            <!-- Quick Actions -->
             <div class="row mt-4">
                 <div class="col-md-12">
                     <div class="card">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0"><?php echo t('balance_overview'); ?></h5>
-                            <form method="get" class="d-inline">
-                                <div class="currency-toggle">
-                                    <button type="button" class="btn <?php echo $currency_admin_dashboard==='usd' ? 'active' : ''; ?>" onclick="this.form.currency_admin_dashboard.value='usd'; this.form.submit()">USD</button>
-                                    <button type="button" class="btn <?php echo $currency_admin_dashboard==='tzs' ? 'active' : ''; ?>" onclick="this.form.currency_admin_dashboard.value='tzs'; this.form.submit()">TZS</button>
-                                    <input type="hidden" name="currency_admin_dashboard" value="<?php echo $currency_admin_dashboard; ?>">
-                                </div>
-                            </form>
+                        <div class="card-header">
+                            <h5 class="mb-0"><i class="fas fa-bolt"></i> Quick Actions</h5>
                         </div>
                         <div class="card-body">
                             <div class="row">
-                                <div class="col-md-4">
-                                    <div class="card bg-light-primary border-0">
-                                        <div class="card-body">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <h6 class="text-primary"><?php echo t('mother_panel_balance'); ?></h6>
-                                                    <h3 class="mb-0"><?php echo $mother_panel_balance !== null ? ($currency_admin_dashboard==='tzs' ? 'TZS ' . number_format($mother_panel_balance*2700,2) : '$' . number_format($mother_panel_balance,2)) : 'N/A'; ?></h3>
-                                                </div>
-                                                <div class="bg-primary-light rounded p-3">
-                                                    <i class="fas fa-wallet text-primary" style="font-size: 1.5rem;"></i>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+                                <div class="col-md-3">
+                                    <a href="admin_payments.php" class="btn btn-outline-primary w-100 mb-2">
+                                        <i class="fas fa-credit-card"></i><br>
+                                        <small>Payment Management</small>
+                                        <?php if ($pending_count > 0): ?>
+                                            <span class="badge bg-warning ms-1"><?php echo $pending_count; ?></span>
+                                        <?php endif; ?>
+                                    </a>
                                 </div>
-                                <div class="col-md-4">
-                                    <div class="card bg-light-success border-0">
-                                        <div class="card-body">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <h6 class="text-success"><?php echo t('income'); ?></h6>
-                                                    <h3 class="mb-0"><?php echo $currency_admin_dashboard==='tzs' ? 'TZS ' . number_format($revenue*2700,2) : '$' . number_format($revenue,2); ?></h3>
-                                                </div>
-                                                <div class="bg-success-light rounded p-3">
-                                                    <i class="fas fa-arrow-down text-success" style="font-size: 1.5rem;"></i>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+                                <div class="col-md-3">
+                                    <a href="admin_currency.php" class="btn btn-outline-success w-100 mb-2">
+                                        <i class="fas fa-coins"></i><br>
+                                        <small>Currency Management</small>
+                                    </a>
                                 </div>
-                                <div class="col-md-4">
-                                    <div class="card bg-light-danger border-0">
-                                        <div class="card-body">
-                                            <div class="d-flex justify-content-between align-items-center">
-                                                <div>
-                                                    <h6 class="text-danger"><?php echo t('expenditure'); ?></h6>
-                                                    <h3 class="mb-0"><?php echo $currency_admin_dashboard==='tzs' ? 'TZS ' . number_format($order_count*0.01*2700,2) : '$' . number_format($order_count*0.01,2); ?></h3>
-                                                </div>
-                                                <div class="bg-danger-light rounded p-3">
-                                                    <i class="fas fa-arrow-up text-danger" style="font-size: 1.5rem;"></i>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
+                                <div class="col-md-3">
+                                    <a href="admin_support.php" class="btn btn-outline-info w-100 mb-2">
+                                        <i class="fas fa-headset"></i><br>
+                                        <small>Support Tickets</small>
+                                        <?php if ($unseen_user_tickets > 0): ?>
+                                            <span class="badge bg-danger ms-1"><?php echo $unseen_user_tickets; ?></span>
+                                        <?php endif; ?>
+                                    </a>
+                                </div>
+                                <div class="col-md-3">
+                                    <button class="btn btn-outline-secondary w-100 mb-2" onclick="showSection('providers')">
+                                        <i class="fas fa-server"></i><br>
+                                        <small>API Providers</small>
+                                    </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            </div>
             </div>
 
             <!-- User Management -->
@@ -839,10 +813,9 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
                                             <th>ID</th>
                                             <th><?php echo t('username'); ?></th>
                                             <th><?php echo t('balance'); ?></th>
-                                            <th><?php echo t('currency'); ?></th>
+                                            <th>Email</th>
+                                            <th>Registered</th>
                                             <th><?php echo t('action'); ?></th>
-                                            <th><?php echo t('add_to_balance'); ?></th>
-                                            <th><?php echo t('delete'); ?></th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -850,36 +823,29 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
                                         <tr>
                                             <td><?php echo $user['id']; ?></td>
                                             <td><?php echo htmlspecialchars($user['username']); ?></td>
-                                            <form method="POST" class="d-inline">
-                                                <td>
-                                                    <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
-                                                    <input type="number" step="0.01" name="new_balance" value="<?php echo $user['balance']; ?>" class="form-control d-inline w-75">
-                                                </td>
-                                                <td>
-                                                    <select name="balance_currency" class="form-select d-inline w-auto">
-                                                        <option value="usd">USD</option>
-                                                        <option value="tzs">TZS</option>
-                                                    </select>
-                                                </td>
-                                                <td>
-                                                    <button type="submit" name="update_balance" class="btn btn-sm btn-success"><?php echo t('set'); ?></button>
-                                                </td>
-                                            </form>
-                                            <form method="POST" class="d-inline">
-                                                <td>
-                                                    <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
-                                                    <input type="number" step="0.01" name="add_balance" class="form-control d-inline w-50" placeholder="<?php echo t('amount'); ?>">
-                                                    <select name="add_balance_currency" class="form-select d-inline w-auto">
-                                                        <option value="usd">USD</option>
-                                                        <option value="tzs">TZS</option>
-                                                    </select>
-                                                    <button type="submit" name="add_to_balance" class="btn btn-sm btn-primary mt-1"><?php echo t('add'); ?></button>
-                                                </td>
-                                            </form>
-                                            <form method="POST" class="d-inline" onsubmit="return confirm('<?php echo t('delete_user_confirm'); ?>');">
-                                                <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
-                                                <td><button type="submit" name="delete_user" class="btn btn-sm btn-danger"><?php echo t('delete'); ?></button></td>
-                                            </form>
+                                            <td>
+                                                <?php 
+                                                require_once 'CurrencyManager.php';
+                                                $currencyManager = new CurrencyManager();
+                                                try {
+                                                    echo $currencyManager->formatCurrency($user['balance'], $user['balance_currency'] ?? 'usd');
+                                                } catch (Exception $e) {
+                                                    echo '$' . number_format($user['balance'], 2);
+                                                }
+                                                ?>
+                                            </td>
+                                            <td><?php echo htmlspecialchars($user['email'] ?? 'N/A'); ?></td>
+                                            <td><?php echo date('M j, Y', strtotime($user['created_at'] ?? 'now')); ?></td>
+                                            <td>
+                                                <a href="admin_currency.php?user_id=<?php echo $user['id']; ?>" class="btn btn-sm btn-primary me-2">
+                                                    <i class="fas fa-wallet"></i> Manage Balance
+                                                </a>
+                                                <form method="POST" class="d-inline" onsubmit="return confirm('<?php echo t('delete_user_confirm'); ?>');">                                                    <input type="hidden" name="user_id" value="<?php echo $user['id']; ?>">
+                                                    <button type="submit" name="delete_user" class="btn btn-sm btn-danger">
+                                                        <i class="fas fa-trash"></i> <?php echo t('delete'); ?>
+                                                    </button>
+                                                </form>
+                                            </td>
                                         </tr>
                                         <?php endforeach; ?>
                                     </tbody>
@@ -1116,102 +1082,31 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
                 </div>
             </div>
 
-            <!-- Support Tickets Management -->
-            <div id="support" class="row mt-5">
-                <div class="col-md-12">
-                    <h2 class="section-title"><i class="fas fa-headset me-2"></i>Support Tickets</h2>
-                    <div class="card">
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table">
-                                    <thead>
-                                        <tr>
-                                            <th>ID</th>
-                                            <th>User</th>
-                                            <th>Type</th>
-                                            <th>Message</th>
-                                            <th>Image</th>
-                                            <th>Created</th>
-                                            <th>Replies</th>
-                                            <th>Reply</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                    <?php while ($ticket = $support_tickets->fetch_assoc()): ?>
-                                        <tr>
-                                            <td><?php echo $ticket['id']; ?></td>
-                                            <td><?php echo htmlspecialchars($ticket['username']); ?></td>
-                                            <td><?php echo htmlspecialchars($ticket['ticket_type']); ?></td>
-                                            <td><?php echo nl2br(htmlspecialchars($ticket['message'])); ?></td>
-                                            <td><?php if ($ticket['image_url']): ?><a href="<?php echo htmlspecialchars($ticket['image_url']); ?>" target="_blank"><img src="<?php echo htmlspecialchars($ticket['image_url']); ?>" alt="img" style="max-width:60px;"></a><?php endif; ?></td>
-                                            <td><?php echo date('M j, Y g:i A', strtotime($ticket['created_at'])); ?></td>
-                                            <td>
-                                                <?php
-                                                $replies = $db->query("SELECT * FROM support_tickets WHERE parent_id = {$ticket['id']} ORDER BY created_at ASC");
-                                                while ($reply = $replies->fetch_assoc()): ?>
-                                                    <div class="mb-2 p-2 bg-light text-dark rounded">
-                                                        <strong>Admin:</strong> <?php echo nl2br(htmlspecialchars($reply['message'])); ?><br>
-                                                        <small><?php echo date('M j, Y g:i A', strtotime($reply['created_at'])); ?></small>
-                                                    </div>
-                                                <?php endwhile; ?>
-                                            </td>
-                                            <td>
-                                                <form method="post">
-                                                    <input type="hidden" name="ticket_id" value="<?php echo $ticket['id']; ?>">
-                                                    <textarea name="reply_message" class="form-control mb-2" placeholder="Type reply..."></textarea>
-                                                    <button type="submit" name="admin_reply" class="btn btn-sm btn-primary">Reply</button>
-                                                </form>
-                                            </td>
-                                        </tr>
-                                    <?php endwhile; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+
 
             <!-- API Providers Management -->
             <div id="providers" class="row mt-5">
                 <div class="col-md-12">
-                    <h2 class="section-title">API Providers Management</h2>
-                    <div class="card">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2 class="section-title mb-0"><i class="fas fa-network-wired"></i> API Providers List</h2>
+                        <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#addProviderModal">
+                            <i class="fas fa-plus"></i> Add New Provider
+                        </button>
+                    </div>
+                    
+                    <div class="card shadow-sm">
                         <div class="card-body">
-                            <!-- Add New Provider Form -->
-                            <div class="mb-4">
-                                <h4>Add New API Provider</h4>
-                                <form class="add-provider-form row g-3">
-                                    <div class="col-md-3">
-                                        <input type="text" name="provider_name" class="form-control" placeholder="Provider Name" required>
-                                    </div>
-                                    <div class="col-md-4">
-                                        <input type="url" name="api_url" class="form-control" placeholder="API URL" required>
-                                    </div>
-                                    <div class="col-md-3">
-                                        <input type="text" name="api_key" class="form-control" placeholder="API Key" required>
-                                    </div>
-                                    <div class="col-md-1">
-                                        <input type="number" name="priority" class="form-control" placeholder="Priority" value="1" min="1">
-                                    </div>
-                                    <div class="col-md-1">
-                                        <button type="submit" class="btn btn-primary">Add</button>
-                                    </div>
-                                </form>
-                            </div>
-                            
                             <!-- Providers List -->
                             <div class="table-responsive">
-                                <table class="table">
-                                    <thead>
+                                <table class="table table-hover">
+                                    <thead class="table-light">
                                         <tr>
+                                            <th>No.</th>
                                             <th>Name</th>
-                                            <th>API URL</th>
+                                            <th>Balance</th>
+                                            <th>Description</th>
                                             <th>Status</th>
-                                            <th>Priority</th>
-                                            <th>Success Rate</th>
-                                            <th>Last Check</th>
-                                            <th>Actions</th>
+                                            <th>Action</th>
                                         </tr>
                                     </thead>
                                     <tbody id="providers-table-body">
@@ -1219,70 +1114,139 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
                                         // Load providers for display
                                         $providers_result = $db->query("SELECT * FROM api_providers ORDER BY priority ASC");
                                         if ($providers_result) {
+                                            $counter = 1;
                                             while ($provider = $providers_result->fetch_assoc()) {
-                                                $statusClass = $provider['status'] === 'active' ? 'success' : ($provider['status'] === 'inactive' ? 'danger' : 'warning');
+                                                $statusClass = $provider['status'] === 'active' ? 'success' : 'danger';
+                                                $statusText = $provider['status'] === 'active' ? 'ACTIVE' : 'INACTIVE';
                                                 echo "<tr data-provider-id='{$provider['id']}'>";
-                                                echo "<td>{$provider['name']}</td>";
-                                                echo "<td><small>" . substr($provider['api_url'], 0, 50) . "...</small></td>";
-                                                echo "<td><span class='badge bg-{$statusClass}'>{$provider['status']}</span></td>";
-                                                echo "<td>{$provider['priority']}</td>";
-                                                echo "<td>" . number_format($provider['success_rate'], 1) . "%</td>";
-                                                echo "<td><small>" . ($provider['last_check'] ? date('M j, H:i', strtotime($provider['last_check'])) : 'Never') . "</small></td>";
+                                                echo "<td>{$counter}</td>";
+                                                echo "<td><strong>{$provider['name']}</strong></td>";
+                                                echo "<td>0.00000</td>"; // Placeholder for balance
+                                                echo "<td><small>" . substr($provider['api_url'], 0, 60) . "...</small></td>";
+                                                echo "<td><span class='badge bg-{$statusClass} px-3 py-2'>{$statusText}</span></td>";
                                                 echo "<td>";
-                                                echo "<button class='btn btn-sm btn-info sync-services-btn' data-provider-id='{$provider['id']}'>Sync Services</button> ";
-                                                echo "<button class='btn btn-sm btn-warning toggle-provider-btn' data-provider-id='{$provider['id']}' data-current-status='{$provider['status']}'>" . ($provider['status'] === 'active' ? 'Deactivate' : 'Activate') . "</button> ";
-                                                echo "<button class='btn btn-sm btn-danger delete-provider-btn' data-provider-id='{$provider['id']}'>Delete</button>";
+                                                echo "<div class='btn-group' role='group'>";
+                                                echo "<button class='btn btn-outline-primary btn-sm edit-provider-btn' data-provider-id='{$provider['id']}' data-bs-toggle='modal' data-bs-target='#editProviderModal' title='Edit'><i class='fas fa-edit'></i></button>";
+                                                echo "<button class='btn btn-outline-info btn-sm sync-services-btn' data-provider-id='{$provider['id']}' title='Sync Services'><i class='fas fa-sync'></i></button>";
+                                                echo "<button class='btn btn-outline-secondary btn-sm toggle-provider-btn' data-provider-id='{$provider['id']}' data-current-status='{$provider['status']}' title='Toggle Status'><i class='fas fa-power-off'></i></button>";
+                                                echo "<button class='btn btn-outline-danger btn-sm delete-provider-btn' data-provider-id='{$provider['id']}' title='Delete'><i class='fas fa-trash'></i></button>";
+                                                echo "</div>";
                                                 echo "</td>";
                                                 echo "</tr>";
+                                                $counter++;
                                             }
+                                        } else {
+                                            echo "<tr><td colspan='6' class='text-center text-muted py-4'>No API providers found</td></tr>";
                                         }
                                         ?>
                                     </tbody>
                                 </table>
                             </div>
-                            
-                            <!-- Provider Performance Stats -->
-                            <div class="mt-4">
-                                <h4>Provider Performance (Last 7 Days)</h4>
-                                <div class="row">
-                                    <?php
-                                    $perf_result = $db->query("
-                                        SELECT p.name, p.status,
-                                               SUM(pf.total_orders) as total_orders,
-                                               SUM(pf.successful_orders) as successful_orders,
-                                               AVG(pf.avg_response_time) as avg_response_time
-                                        FROM api_providers p
-                                        LEFT JOIN provider_performance pf ON p.id = pf.provider_id 
-                                            AND pf.date_recorded >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-                                        GROUP BY p.id, p.name, p.status
-                                        ORDER BY p.priority ASC
-                                    ");
-                                    
-                                    if ($perf_result) {
-                                        while ($perf = $perf_result->fetch_assoc()) {
-                                            $successRate = $perf['total_orders'] > 0 ? ($perf['successful_orders'] / $perf['total_orders']) * 100 : 0;
-                                            $statusColor = $perf['status'] === 'active' ? 'success' : 'secondary';
-                                            echo "<div class='col-md-4 mb-3'>";
-                                            echo "<div class='card border-{$statusColor}'>";
-                                            echo "<div class='card-body'>";
-                                            echo "<h6 class='card-title'>{$perf['name']}</h6>";
-                                            echo "<p class='card-text'>";
-                                            echo "Orders: " . ($perf['total_orders'] ?: 0) . "<br>";
-                                            echo "Success Rate: " . number_format($successRate, 1) . "%<br>";
-                                            echo "Avg Response: " . number_format($perf['avg_response_time'] ?: 0, 0) . "ms";
-                                            echo "</p>";
-                                            echo "</div>";
-                                            echo "</div>";
-                                            echo "</div>";
-                                        }
-                                    }
-                                    ?>
-                                </div>
-                            </div>
                         </div>
                     </div>
                 </div>
             </div>
+            
+            <!-- Add Provider Modal -->
+            <div class="modal fade" id="addProviderModal" tabindex="-1" aria-labelledby="addProviderModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header bg-primary text-white">
+                            <h5 class="modal-title" id="addProviderModalLabel"><i class="fas fa-plus"></i> Add New API Provider</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <form class="add-provider-form">
+                            <div class="modal-body">
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle"></i> This tool supports input of all api providers like subscriptionbay,followersup,smmkart etc.
+                                    Support another api provider which have different api parameters
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label for="provider_name" class="form-label">Name</label>
+                                        <input type="text" name="provider_name" id="provider_name" class="form-control" placeholder="Provider Name" required>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="api_url" class="form-label">URL</label>
+                                        <input type="url" name="api_url" id="api_url" class="form-control" placeholder="API URL" required>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="api_key" class="form-label">API Key</label>
+                                        <input type="text" name="api_key" id="api_key" class="form-control" placeholder="API Key" required>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="provider_status" class="form-label">Status</label>
+                                        <select name="status" id="provider_status" class="form-select">
+                                            <option value="active">Active</option>
+                                            <option value="inactive">Inactive</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-12">
+                                        <label for="provider_description" class="form-label">Description</label>
+                                        <textarea name="description" id="provider_description" class="form-control" rows="3" placeholder="Provider description (optional)"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                <button type="submit" class="btn btn-primary">Submit</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Edit Provider Modal -->
+            <div class="modal fade" id="editProviderModal" tabindex="-1" aria-labelledby="editProviderModalLabel" aria-hidden="true">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header bg-warning text-dark">
+                            <h5 class="modal-title" id="editProviderModalLabel"><i class="fas fa-edit"></i> Edit API</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <form class="edit-provider-form">
+                            <input type="hidden" name="provider_id" id="edit_provider_id">
+                            <div class="modal-body">
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle"></i> This tool supports input of all api providers like subscriptionbay,followersup,smmkart etc.
+                                    Support another api provider which have different api parameters
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label for="edit_provider_name" class="form-label">Name</label>
+                                        <input type="text" name="provider_name" id="edit_provider_name" class="form-control" placeholder="Provider Name" required>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="edit_api_url" class="form-label">URL</label>
+                                        <input type="url" name="api_url" id="edit_api_url" class="form-control" placeholder="API URL" required>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="edit_api_key" class="form-label">API Key</label>
+                                        <input type="text" name="api_key" id="edit_api_key" class="form-control" placeholder="API Key" required>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label for="edit_provider_status" class="form-label">Status</label>
+                                        <select name="status" id="edit_provider_status" class="form-select">
+                                            <option value="active">Active</option>
+                                            <option value="inactive">Inactive</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-12">
+                                        <label for="edit_provider_description" class="form-label">Description</label>
+                                        <textarea name="description" id="edit_provider_description" class="form-control" rows="3" placeholder="Provider description (optional)"></textarea>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                                <button type="submit" class="btn btn-warning">Submit</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
             <!-- Logout Button -->
             <div class="row mt-5">
@@ -1336,14 +1300,20 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
         }
         
         // Handle sidebar navigation clicks
-        document.querySelectorAll('.sidebar-nav a[href^="#"]').forEach(anchor => {
+        document.querySelectorAll('.sidebar .nav-link[href^="#"], .sidebar .nav-link[data-section]').forEach(anchor => {
             anchor.addEventListener('click', function (e) {
                 e.preventDefault();
-                const sectionId = this.getAttribute('href').substring(1);
-                showSection(sectionId);
-                
-                // Update URL hash without scrolling
-                history.pushState(null, null, '#' + sectionId);
+                let sectionId = this.getAttribute('href');
+                if (sectionId && sectionId.startsWith('#')) {
+                    sectionId = sectionId.substring(1);
+                } else {
+                    sectionId = this.getAttribute('data-section');
+                }
+                if (sectionId) {
+                    showSection(sectionId);
+                    // Update URL hash without scrolling
+                    history.pushState(null, null, '#' + sectionId);
+                }
             });
         });
         
@@ -1357,11 +1327,200 @@ $unseen_user_tickets = $db->query("SELECT COUNT(*) as c FROM support_tickets WHE
             }
         });
         
-        // Show initial section based on URL hash or default to dashboard
+        // Initialize sections on page load
         document.addEventListener('DOMContentLoaded', function() {
+            // Hide all sections first
+            document.querySelectorAll('.main-content .row[id]').forEach(section => {
+                section.style.display = 'none';
+            });
+            
+            // Show initial section based on URL hash or default to dashboard
             const hash = window.location.hash.substring(1);
             const initialSection = hash || 'dashboard';
             showSection(initialSection);
+            
+            // Ensure dashboard is shown by default if no hash
+            if (!hash) {
+                const dashboardSection = document.getElementById('dashboard');
+                if (dashboardSection) {
+                    dashboardSection.style.display = 'block';
+                }
+            }
+        });
+        
+        // API Provider Management Functions
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add new provider
+            const addProviderForm = document.querySelector('.add-provider-form');
+            if (addProviderForm) {
+                addProviderForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    const formData = new FormData(this);
+                    formData.append('action', 'add_provider');
+                    
+                    fetch('admin_api_handler.php', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert('Provider added successfully!');
+                            bootstrap.Modal.getInstance(document.getElementById('addProviderModal')).hide();
+                            location.reload();
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while adding the provider.');
+                    });
+                });
+            }
+            
+            // Edit provider - load data into modal
+            document.querySelectorAll('.edit-provider-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const providerId = this.dataset.providerId;
+                    
+                    fetch(`admin_api_handler.php?action=get_provider&provider_id=${providerId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            const provider = data.provider;
+                            document.getElementById('edit_provider_id').value = provider.id;
+                            document.getElementById('edit_provider_name').value = provider.name;
+                            document.getElementById('edit_api_url').value = provider.api_url;
+                            document.getElementById('edit_api_key').value = provider.api_key;
+                            document.getElementById('edit_provider_status').value = provider.status;
+                            document.getElementById('edit_provider_description').value = provider.description || '';
+                        }
+                    });
+                });
+            });
+            
+            // Edit provider form submission
+            const editProviderForm = document.querySelector('.edit-provider-form');
+            if (editProviderForm) {
+                editProviderForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    const formData = new FormData(this);
+                    formData.append('action', 'edit_provider');
+                    
+                    fetch('admin_api_handler.php', {
+                        method: 'POST',
+                        body: formData
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert('Provider updated successfully!');
+                            bootstrap.Modal.getInstance(document.getElementById('editProviderModal')).hide();
+                            location.reload();
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while updating the provider.');
+                    });
+                });
+            }
+            
+            // Sync services button
+            document.querySelectorAll('.sync-services-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const providerId = this.dataset.providerId;
+                    this.disabled = true;
+                    this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Syncing...';
+                    
+                    fetch('admin_api_handler.php', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: `action=sync_services&provider_id=${providerId}`
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            alert(`Services synced successfully! ${data.imported || 0} imported, ${data.updated || 0} updated.`);
+                            location.reload();
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while syncing services.');
+                    })
+                    .finally(() => {
+                        this.disabled = false;
+                        this.innerHTML = 'Sync Services';
+                    });
+                });
+            });
+            
+            // Toggle provider status
+            document.querySelectorAll('.toggle-provider-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const providerId = this.dataset.providerId;
+                    const currentStatus = this.dataset.currentStatus;
+                    const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+                    
+                    fetch('admin_api_handler.php', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: `action=toggle_provider&provider_id=${providerId}&status=${newStatus}`
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            location.reload();
+                        } else {
+                            alert('Error: ' + data.message);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while updating provider status.');
+                    });
+                });
+            });
+            
+            // Delete provider
+            document.querySelectorAll('.delete-provider-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    if (confirm('Are you sure you want to delete this provider? This action cannot be undone.')) {
+                        const providerId = this.dataset.providerId;
+                        
+                        fetch('admin_api_handler.php', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                            },
+                            body: `action=delete_provider&provider_id=${providerId}`
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.success) {
+                                alert('Provider deleted successfully!');
+                                location.reload();
+                            } else {
+                                alert('Error: ' + data.message);
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error:', error);
+                            alert('An error occurred while deleting the provider.');
+                        });
+                    }
+                });
+            });
         });
     </script>
     <?php include 'whatsapp-float.php'; ?>

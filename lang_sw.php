@@ -140,7 +140,7 @@ return [
     'link_hint' => 'https://example.com',
     'transaction_history' => 'Historia ya Muamala',
     'user_email' => 'Barua pepe',
-    'admin_support_tickets' => 'Tiketi za Msaada wa Admin',
+    
     'welcome_title' => 'karibu sirtech smm'
 
 ];

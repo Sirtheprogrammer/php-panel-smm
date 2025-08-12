@@ -414,40 +414,68 @@ function placeOrder() {
     }
     
     $currency = $_SESSION['currency'] ?? 'usd';
-    $price = $currency === 'tzs' ? $service['price_tzs'] : $service['price_usd'];
-    $total_cost = $price * $quantity;
     
-    if ($user['balance'] < $total_cost) {
-        echo json_encode(['success' => false, 'message' => t('insufficient_balance')]);
-        return;
-    }
+    // Use CurrencyManager for proper currency handling
+    require_once 'CurrencyManager.php';
+    $currencyManager = new CurrencyManager();
     
-    // Use multi-provider API with automatic failover
-    require_once 'MultiProviderApi.php';
-    $multiApi = new MultiProviderApi();
-    
-    $result = $multiApi->placeOrder($service_id, $link, $quantity, $user_id);
-    
-    if ($result['success']) {
-        // Deduct balance
-        $new_balance = $user['balance'] - $total_cost;
-        $stmt = $db->prepare("UPDATE users SET balance = ? WHERE id = ?");
-        $stmt->bind_param("di", $new_balance, $user_id);
-        $stmt->execute();
+    try {
+        // Calculate total cost using CurrencyManager
+        $total_cost = $currencyManager->calculateOrderCost($service_id, $quantity, $currency);
         
-        echo json_encode([
-            'success' => true,
-            'message' => t('order_placed_successfully') . " (Provider: {$result['provider']})",
-            'data' => [
-                'order_id' => $result['order_id'],
-                'api_order_id' => $result['api_order_id'],
-                'provider' => $result['provider'],
-                'new_balance' => $new_balance,
-                'total_cost' => $total_cost
-            ]
-        ]);
-    } else {
-        echo json_encode(['success' => false, 'message' => $result['message']]);
+        // Check user balance in the selected currency
+        $user_balance = $currencyManager->getUserBalance($user_id, $currency);
+        
+        if ($user_balance < $total_cost) {
+            echo json_encode([
+                'success' => false, 
+                'message' => t('insufficient_balance') . ' Required: ' . $currencyManager->formatCurrency($total_cost, $currency) . ', Available: ' . $currencyManager->formatCurrency($user_balance, $currency)
+            ]);
+            return;
+        }
+        
+        // Use multi-provider API with automatic failover
+        require_once 'MultiProviderApi.php';
+        $multiApi = new MultiProviderApi();
+        
+        $result = $multiApi->placeOrder($service_id, $link, $quantity, $user_id);
+        
+        if ($result['success']) {
+            // Insert order record first
+            $stmt = $db->prepare("INSERT INTO orders (user_id, service, quantity, link, api_order_id, status, charge, charge_currency, provider_id) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)");
+            $stmt->bind_param('iiissdsi', $user_id, $service_id, $quantity, $link, $result['api_order_id'], $total_cost, $currency, $result['provider_id'] ?? 1);
+            $stmt->execute();
+            $db_order_id = $stmt->insert_id;
+            $stmt->close();
+            
+            // Deduct balance using CurrencyManager (with transaction safety)
+            $deduction_result = $currencyManager->deductBalance($user_id, $total_cost, $currency, $db_order_id);
+            
+            if ($deduction_result['success']) {
+                echo json_encode([
+                    'success' => true,
+                    'message' => t('order_placed_successfully') . " (Provider: {$result['provider']})",
+                    'data' => [
+                        'order_id' => $result['order_id'],
+                        'api_order_id' => $result['api_order_id'],
+                        'provider' => $result['provider'],
+                        'new_balance' => $deduction_result['new_balance'],
+                        'total_cost' => $total_cost,
+                        'currency' => $currency,
+                        'formatted_cost' => $currencyManager->formatCurrency($total_cost, $currency),
+                        'formatted_balance' => $currencyManager->formatCurrency($deduction_result['new_balance'], $deduction_result['currency'])
+                    ]
+                ]);
+            } else {
+                // If deduction failed, remove the order
+                $db->query("DELETE FROM orders WHERE id = $db_order_id");
+                echo json_encode(['success' => false, 'message' => 'Failed to process payment. Please try again.']);
+            }
+        } else {
+            echo json_encode(['success' => false, 'message' => $result['message']]);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => 'Error processing order: ' . $e->getMessage()]);
     }
 }
 
@@ -504,6 +532,7 @@ function addFunds() {
     
     $user_id = (int)$_SESSION['user_id'];
     $amount = (float)$_POST['amount'];
+    $currency = $_POST['currency'] ?? $_SESSION['currency'] ?? 'usd';
     $payment_method = $_POST['payment_method'] ?? '';
     
     if ($amount <= 0) {
@@ -511,107 +540,32 @@ function addFunds() {
         return;
     }
     
-    // For demo purposes, we'll just add the funds directly
-    // In a real application, you'd integrate with a payment processor
-    $stmt = $db->prepare("UPDATE users SET balance = balance + ? WHERE id = ?");
-    $stmt->bind_param("di", $amount, $user_id);
-    
-    if ($stmt->execute()) {
-        // Get new balance
-        $stmt = $db->prepare("SELECT balance FROM users WHERE id = ?");
-        $stmt->bind_param("i", $user_id);
-        $stmt->execute();
-        $new_balance = $stmt->get_result()->fetch_assoc()['balance'];
+    try {
+        // Use CurrencyManager for proper currency handling
+        require_once 'CurrencyManager.php';
+        $currencyManager = new CurrencyManager();
         
-        echo json_encode([
-            'success' => true,
-            'message' => t('funds_added_successfully'),
-            'data' => [
-                'amount_added' => $amount,
-                'new_balance' => $new_balance
-            ]
-        ]);
-    } else {
-        echo json_encode(['success' => false, 'message' => t('funds_add_failed')]);
-    }
-}
-
-function submitSupportTicket() {
-    global $db;
-    
-    if (!isset($_SESSION['user_id'])) {
-        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
-        return;
-    }
-    
-    $user_id = (int)$_SESSION['user_id'];
-    $subject = $_POST['subject'] ?? '';
-    $message = $_POST['message'] ?? '';
-    
-    if (empty($subject) || empty($message)) {
-        echo json_encode(['success' => false, 'message' => t('subject_message_required')]);
-        return;
-    }
-    
-    $stmt = $db->prepare("INSERT INTO support_tickets (user_id, subject, message, status, created_at) VALUES (?, ?, ?, 'open', NOW())");
-    $stmt->bind_param("iss", $user_id, $subject, $message);
-    
-    if ($stmt->execute()) {
-        echo json_encode([
-            'success' => true,
-            'message' => t('ticket_submitted_successfully'),
-            'data' => [
-                'ticket_id' => $db->insert_id
-            ]
-        ]);
-    } else {
-        echo json_encode(['success' => false, 'message' => t('ticket_submit_failed')]);
-    }
-}
-
-function replySupportTicket() {
-    global $db;
-    
-    if (!isset($_SESSION['user_id'])) {
-        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
-        return;
-    }
-    
-    $user_id = (int)$_SESSION['user_id'];
-    $ticket_id = (int)$_POST['ticket_id'];
-    $message = $_POST['message'] ?? '';
-    
-    if (empty($message)) {
-        echo json_encode(['success' => false, 'message' => t('message_required')]);
-        return;
-    }
-    
-    // Verify ticket belongs to user
-    $stmt = $db->prepare("SELECT id FROM support_tickets WHERE id = ? AND user_id = ?");
-    $stmt->bind_param("ii", $ticket_id, $user_id);
-    $stmt->execute();
-    
-    if ($stmt->get_result()->num_rows === 0) {
-        echo json_encode(['success' => false, 'message' => t('ticket_not_found')]);
-        return;
-    }
-    
-    // Add reply
-    $stmt = $db->prepare("INSERT INTO support_replies (ticket_id, user_id, message, created_at) VALUES (?, ?, ?, NOW())");
-    $stmt->bind_param("iis", $ticket_id, $user_id, $message);
-    
-    if ($stmt->execute()) {
-        // Update ticket status
-        $stmt = $db->prepare("UPDATE support_tickets SET status = 'awaiting_response', updated_at = NOW() WHERE id = ?");
-        $stmt->bind_param("i", $ticket_id);
-        $stmt->execute();
+        // For demo purposes, we'll just add the funds directly
+        // In a real application, you'd integrate with a payment processor
+        $result = $currencyManager->addBalance($user_id, $amount, $currency);
         
-        echo json_encode([
-            'success' => true,
-            'message' => t('reply_added_successfully')
+        if ($result['success']) {
+            echo json_encode([
+                'success' => true,
+                'message' => t('funds_added_successfully'),
+                'data' => [
+                    'amount_added' => $result['added_amount'],
+                    'new_balance' => $result['new_balance'],
+                    'currency' => $result['currency'],
+                    'formatted_amount' => $currencyManager->formatCurrency($result['added_amount'], $result['currency']),
+                    'formatted_balance' => $currencyManager->formatCurrency($result['new_balance'], $result['currency'])
+                ]
         ]);
-    } else {
-        echo json_encode(['success' => false, 'message' => t('reply_failed')]);
+        } else {
+            echo json_encode(['success' => false, 'message' => t('funds_add_failed')]);
+        }
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => 'Error adding funds: ' . $e->getMessage()]);
     }
 }
 

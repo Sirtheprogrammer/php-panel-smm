@@ -1,7 +1,9 @@
 <?php
 require_once 'config.php';
-require_once 'Api.php';
-$api = new Api();
+require_once 'ApiClient.php';
+require_once 'CurrencyManager.php';
+
+$currencyManager = new CurrencyManager();
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
@@ -59,44 +61,78 @@ if (
     $_SERVER['REQUEST_METHOD'] == 'POST' &&
     isset($_POST['service'], $_POST['quantity'], $_POST['link'])
 ) {
-    $api_service_id = (int)$_POST['service'];
+    $local_service_id = (int)$_POST['service'];
     $quantity = (int)$_POST['quantity'];
     $link = $db->real_escape_string($_POST['link']);
-    // Get service price (USD or TZS)
-    $service_info = $service_map[$api_service_id] ?? null;
+
+    // Get service info from local DB
+    $stmt = $db->prepare("SELECT s.*, p.api_url, p.api_key FROM services s LEFT JOIN api_providers p ON s.provider_id = p.id WHERE s.id = ?");
+    $stmt->bind_param('i', $local_service_id);
+    $stmt->execute();
+    $service_info = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
     if ($service_info) {
-        $price_per_1000 = $currency === 'tzs' ? $service_info['price_tzs'] : $service_info['price_usd'];
-        $total_price = ($price_per_1000 / 1000) * $quantity;
-        // Check user balance
-        if ($user['balance'] >= $total_price) {
-            // Place order via API using api_service_id
-            $api_response = $api->order([
-                'service' => $api_service_id,
-                'link' => $link,
-                'quantity' => $quantity
-            ]);
-            if (isset($api_response->order)) {
-                $order_id = $api_response->order;
-                $local_service_id = $service_info['id'];
-                // Deduct balance
-                $new_balance = $user['balance'] - $total_price;
-                $db->query("UPDATE users SET balance = $new_balance WHERE id = $user_id");
-                $stmt = $db->prepare("INSERT INTO orders (user_id, service, quantity, link, api_order_id, status) VALUES (?, ?, ?, ?, ?, ?)");
-                $status = 'pending';
-                $stmt->bind_param('iiisis', $user_id, $local_service_id, $quantity, $link, $order_id, $status);
-                $stmt->execute();
-                $stmt->close();
-                $success = "Order placed successfully! Order ID: $order_id";
-                // Update user variable for UI
-                $user['balance'] = $new_balance;
-            } else {
-                $error = "Order failed: " . ($api_response->error ?? 'Unknown error');
+        try {
+            // Calculate total price
+            $total_price = $currencyManager->calculateOrderCost($local_service_id, $quantity, $currency);
+
+            // Check user balance
+            if (!$currencyManager->hasSufficientBalance($user_id, $total_price, $currency)) {
+                throw new Exception('Insufficient balance.');
             }
-        } else {
-            $error = "Insufficient balance.";
+
+            $provider_order_id = null;
+            // If service is from a provider, place order via API
+            if ($service_info['provider_id'] && $service_info['api_url'] && $service_info['api_key']) {
+                $apiClient = new ApiClient($service_info['api_url'], $service_info['api_key']);
+                
+                $order_params = [
+                    'service' => $service_info['service_id'], // Use the provider's service ID
+                    'link'    => $link,
+                    'quantity'=> $quantity
+                ];
+
+                // Add other potential parameters if they exist in POST
+                if (isset($_POST['comments'])) $order_params['comments'] = $_POST['comments'];
+                if (isset($_POST['runs'])) $order_params['runs'] = $_POST['runs'];
+                if (isset($_POST['interval'])) $order_params['interval'] = $_POST['interval'];
+
+                $api_response = $apiClient->order($order_params);
+
+                if (isset($api_response['order'])) {
+                    $provider_order_id = $api_response['order'];
+                } else {
+                    throw new Exception('API Order Failed: ' . ($api_response['error'] ?? 'Unknown error from provider.'));
+                }
+            }
+
+            // Insert order record into local DB
+            $status = 'pending'; // Initial status for all orders
+            $stmt = $db->prepare("INSERT INTO orders (user_id, service_id, quantity, link, provider_order_id, status, charge, currency) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            if (!$stmt) throw new Exception("DB Error: " . $db->error);
+            $stmt->bind_param('iiisssds', $user_id, $local_service_id, $quantity, $link, $provider_order_id, $status, $total_price, $currency);
+            $stmt->execute();
+            $db_order_id = $stmt->insert_id;
+            $stmt->close();
+
+            // Deduct balance
+            $deduction_result = $currencyManager->deductBalance($user_id, $total_price, $currency, $db_order_id);
+
+            if ($deduction_result) {
+                $success = "Order placed successfully! Your Order ID: $db_order_id";
+            } else {
+                $error = "Order placed, but failed to update balance. Please contact support.";
+                // If deduction failed, we should attempt to cancel the external order if possible, or flag for admin review.
+                // For now, just delete the local order to prevent user confusion.
+                $db->query("DELETE FROM orders WHERE id = $db_order_id");
+            }
+
+        } catch (Exception $e) {
+            $error = "Error processing order: " . $e->getMessage();
         }
     } else {
-        $error = "Invalid service selected.";
+        $error = 'Service not found.';
     }
 }
 ?>
@@ -473,14 +509,7 @@ if (
                     <select name="service_id" id="service" class="form-control" required onchange="showServiceInfo(this.value)">
                         <option value=""><?php echo t('select_service'); ?></option>
                         <?php foreach ($filtered_services as $s): ?>
-                            <option value="<?php echo htmlspecialchars($s['id'] ?? ''); ?>"
-                                data-description="<?php echo htmlspecialchars($s['description'] ?? ''); ?>"
-                                data-min="<?php echo htmlspecialchars($s['min'] ?? '-'); ?>"
-                                data-max="<?php echo htmlspecialchars($s['max'] ?? '-'); ?>"
-                                data-instructions="<?php echo htmlspecialchars($s['instructions'] ?? ''); ?>"
-                                data-price_usd="<?php echo htmlspecialchars($s['price_usd'] ?? ''); ?>"
-                                data-price_tzs="<?php echo htmlspecialchars($s['price_tzs'] ?? ''); ?>"
-                                data-name="<?php echo htmlspecialchars($s['name'] ?? ''); ?>"
+                            <option value="<?php echo $s['id']; ?>" data-rate="<?php echo $rate; ?>" data-min="<?php echo $s['min']; ?>" data-max="<?php echo $s['max']; ?>" data-description="<?php echo htmlspecialchars($s['description'] ?? 'No description available.'); ?>">
                             >
                                 <?php if($currency==='tzs'): ?>
                                     <?php echo htmlspecialchars(($s['name'] ?? 'Unknown') . ' - TZS ' . ($s['price_tzs'] ?? 'N/A') . '/1000'); ?>
